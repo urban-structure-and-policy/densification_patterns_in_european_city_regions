@@ -1,0 +1,85 @@
+---
+title: "IDW Interpolation"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(sf)
+library(gstat)
+library(sp)
+library(terra)
+library(tidyverse)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Function to load data and run IDW interpolation
+
+```{r}
+run_idw_interpolation <- function(region) {
+  
+  # Construct relative file paths
+  points_path <- file.path(getwd(), "output/cci/output", paste0(region, "_50perc_25_05_21"), paste0("centrality_", region, "_50perc_oA.shp"))
+  case_path   <- file.path(getwd(), "output/cci/input", "csr", paste0(region, ".shp"))
+  
+  # Load data
+  points <- st_read(points_path)
+  case <- st_read(case_path)
+  
+  ## Convert to Spatial Object
+  points_sp <- as(points, "Spatial")
+
+  ## Create Prediction Grid
+  r <- rast(ext(case), resolution = 500)
+  crs(r) <- crs(points)
+  
+  grid_sp <- as.data.frame(r, xy = TRUE, na.rm = FALSE)
+  coordinates(grid_sp) <- ~x + y
+  gridded(grid_sp) <- TRUE
+  proj4string(grid_sp) <- proj4string(points_sp)
+  
+  ## Perform IDW Interpolation
+  # new_m_w_n is value after normalization from 0-1
+  # mean_w_inv is the absolute value for each region
+  idw_model <- gstat(formula = new_m_w_n ~ 1, data = points_sp, nmax = 10, set = list(idp = 2.0))
+  idw_result <- predict(idw_model, newdata = grid_sp)
+  
+  # Convert the 'SpatialPixelsDataFrame' (from IDW result) to SpatialPolygonsDataFrame
+  idw_polygons <- as(idw_result, "SpatialPolygonsDataFrame")
+  
+  # Convert to sf object
+  idw_sf <- st_as_sf(idw_polygons) %>% 
+    transmute(new_m_w_n_idw = var1.pred)
+  
+  # Crop to CSR
+  idw_sf <- st_transform(idw_sf, st_crs(case))
+  idw_sf_case <- st_filter(idw_sf, case, .predicate = st_intersects)
+  
+  return(idw_sf_case)
+}
+```
+
+# Apply function to all regions
+
+```{r}
+dor <- run_idw_interpolation("dor")
+str <- run_idw_interpolation("str")
+liv <- run_idw_interpolation("liv")
+```
+
+# Write results
+
+```{r}
+st_write(dor, "./output/dor_cci_fin.gpkg", delete_layer = TRUE)
+st_write(str, "./output/str_cci_fin.gpkg", delete_layer = TRUE)
+st_write(liv, "./output/liv_cci_fin.gpkg", delete_layer = TRUE)
+```
+

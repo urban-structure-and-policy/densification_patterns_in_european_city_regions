@@ -1,0 +1,152 @@
+---
+title: "Random Forest Classification for Building Type Prediction Strasbourg"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(randomForest)
+library(caret)
+library(ROSE)
+library(pROC)
+library(dplyr)
+library(e1071)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+```{r}
+data <- read_rds("./output/str_bldg_input_rf.rds")
+
+str_bldg_22 <- st_read("./output/str_bldg_2022_02_filtered.gpkg")
+```
+
+## Filter to residential buildings and take care of NA
+
+```{r}
+# treat NA
+data_clean <- data %>% 
+  mutate(block_id = if_else(is.na(block_id), 11111, block_id),
+         OID_BLK = if_else(is.na(OID_BLK), 11111, OID_BLK),
+         AREA_BLK = if_else(is.na(AREA_BLK), mean(AREA_BLK, na.rm = TRUE), AREA_BLK),
+         SUM_Shape_Area = if_else(is.na(SUM_Shape_Area), mean(SUM_Shape_Area, na.rm = TRUE), SUM_Shape_Area),
+         MEAN_Shape_Area = if_else(is.na(MEAN_Shape_Area), mean(MEAN_Shape_Area, na.rm = TRUE), MEAN_Shape_Area),
+         STD_Shape_Area = if_else(is.na(STD_Shape_Area), mean(STD_Shape_Area, na.rm = TRUE), STD_Shape_Area),
+         BUILDUP = if_else(is.na(BUILDUP), mean(BUILDUP, na.rm = TRUE), BUILDUP))
+
+colSums(is.na(data_clean))
+
+# Ensure the response variable is a factor
+data_clean <- data_clean %>% 
+  mutate(ref = as.factor(REFSTR_simple)) %>% 
+  select(-REFSTR_simple)
+
+# Filter only the relevant classes
+data_filtered <- data_clean %>% filter(!is.na(ref))
+```
+
+## Balancing classes
+
+```{r}
+# Undersample each class to the size of the smallest class
+set.seed(123)
+min_class_size <- min(table(data_filtered$ref))
+
+test <- data_filtered %>% select(ref, REFSTR) %>% 
+  group_by(REFSTR) %>% 
+  summarise(n = n())
+test
+
+balanced_data <- data_filtered %>%
+  group_by(REFSTR) %>%
+  slice_sample(n = 100) %>%
+  ungroup() %>% 
+  select(-REFSTR)
+
+# test unbalanced
+balanced_data <- data_filtered %>% 
+  select(-REFSTR)
+
+balanced_data %>%   
+  group_by(ref) %>% 
+  summarise(n = n())
+```
+
+
+## Split Data into Training and Testing Sets
+
+```{r}
+set.seed(123)
+trainIndex <- createDataPartition(balanced_data$ref, p = .8, list = FALSE)
+train_data <- balanced_data[trainIndex, ]
+test_data <- balanced_data[-trainIndex, ]
+```
+
+## Train Random Forest Model
+
+```{r}
+set.seed(123)
+rf_model <- randomForest(ref ~ ., data = train_data, importance = TRUE)
+print(rf_model)
+```
+
+## Model Evaluation
+
+```{r}
+# Predictions
+predictions <- predict(rf_model, test_data)
+
+# Confusion Matrix
+conf_matrix <- confusionMatrix(predictions, test_data$ref)
+print(conf_matrix)
+
+# F1 Score
+# f1 <- F1_Score(predictions, test_data$ref, positive = NULL)
+# print(paste("F1 Score:", round(f1, 3)))
+
+# AUC Calculation
+probabilities <- predict(rf_model, test_data, type = "prob")
+roc_obj <- multiclass.roc(test_data$ref, probabilities)
+auc <- auc(roc_obj)
+print(paste("AUC:", round(auc, 3)))
+```
+
+## Variable Importance
+
+```{r}
+# Plot variable importance
+varImpPlot(rf_model)
+```
+
+## Predict on Full Dataset
+
+```{r}
+# Predict building types for the whole dataset
+full_predictions <- predict(rf_model, newdata = data_clean)
+data_clean$predicted_ref <- full_predictions
+head(data_clean)
+```
+
+## Join results to full builing dataset
+
+```{r}
+result_rf_geopackage <- str_bldg_22 %>% 
+  left_join(data_clean %>% transmute(ID,  
+                                     bldg_vol = VOL,
+                                     pred_bldg_type = predicted_ref))
+```
+
+## Write result
+```{r}
+st_write(result_rf_geopackage, "./output/str_bldg_2022_03_bldg_type.gpkg", delete_layer = TRUE)
+```
+

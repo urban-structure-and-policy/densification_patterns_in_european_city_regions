@@ -1,0 +1,106 @@
+---
+title: "Prepare building footprints and heights for Liverpool"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(tidyverse)
+library(vroom)
+library(sf)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+* Case study region
+* Building footprints 2011 and 2021: OS Mastermap data comes as tiles which need to be merged. We extract buildings only. 
+* Building heights 2021
+
+Details on Building heights: 
+There are different ways of measuring building height in the UK data. For further processing, we use RelHMax and RelH2. 
+
+* RelH2 = AbsH2 – AbsHMin. RelH2 is the relative building height from the base of the building (AbsHMin) to the height of the base of the roof (AbsH2).
+* RelHMax = AbsHMax – AbsHMin. RelHMax is the relative building height from the base of the building (AbsHMin) to the height of the highest point on the building (AbsHMax).
+
+See details in: https://docs.os.uk/os-downloads/topography/os-mastermap-topography-layer-building-height-attribute/os-mastermap-topography-layer-building-height-attribute-technical-specification/feature-type/building-height-attribute
+
+```{r}
+liv_case <- st_read("./output/liv_iso30_LSOA_dissolved.gpkg")
+
+liv_bldg_2021 <-
+  list.files(".input/OS/Liverpool 2021", full.names = TRUE) %>% 
+  str_subset("gpkg$") %>% 
+  map_dfr(read_sf, layer = "Topographicarea") %>% 
+  mutate(fid_os = fid) %>% select(-fid) %>%
+  filter(theme == "Buildings")
+
+liv_bldg_2011 <-
+  list.files(".input/OS/Liverpool 2011", full.names = TRUE) %>% 
+  str_subset("gpkg$") %>% 
+  map_dfr(read_sf, layer = "Topographicarea") %>% 
+  mutate(fid_os = fid) %>% select(-fid) %>%
+  filter(theme == "Buildings")
+
+liv_2021_ha <-
+  list.files(".input/OS/building_heights/Liverpool Oct 2021/", recursive = TRUE, 
+             full.names = TRUE) %>% 
+  str_subset("(?<=\\/)[a-zA-Z0-9]{6,6}\\.csv$") %>%
+  map_dfr(read_csv, col_names = FALSE) 
+
+colnames(liv_2021_ha) <- c("OS_TOPO_TOID", "OS_TOPO_TOID_VERSION", "BHA_ProcessDate", "TileRef", "AbsHMin", "AbsH2", "AbsHMax", "RelH2", "RelHMax", "BHA_Conf")
+```
+
+## Clean data heights
+
+As the data comes as tiles, there are some building polygons duplicated at the intersections. We filter them. 
+
+```{r}
+liv_2021_ha_clean <- liv_2021_ha %>%
+  group_by(OS_TOPO_TOID) %>% 
+  filter(!duplicated(OS_TOPO_TOID))
+```
+
+## Join building footprints and buildings heights 2021
+
+```{r}
+liv_bldg_2021_height <- liv_bldg_2021 %>%
+  left_join(liv_2021_ha_clean, by = join_by("fid_os" == "OS_TOPO_TOID"))
+```
+
+## Filter to buildings which intersect case study region
+
+```{r}
+st_crs(liv_case) == st_crs(liv_bldg_2021_height)
+st_crs(liv_case) == st_crs(liv_bldg_2011)
+
+liv_bldg_2021_height_case <- st_filter(liv_bldg_2021_height, liv_case, .predicate = st_intersects)
+
+liv_2011_case <- st_filter(liv_bldg_2011, liv_case, .predicate = st_intersects)
+```
+
+```{r}
+liv_bldg_2021_clean <- liv_bldg_2021_height_case %>%
+  group_by(fid_os) %>% 
+  filter(!duplicated(fid_os)) 
+
+liv_bldg_2011_clean <- liv_2011_case %>%
+  group_by(fid_os) %>% 
+  filter(!duplicated(fid_os)) 
+```
+
+
+## Write results
+
+```{r}
+st_write(liv_bldg_2021_clean, "./output/liv_bldg_2021_01_ha_raw.gpkg", delete_layer = TRUE)
+st_write(liv_bldg_2011_clean, "./output/liv_bldg_2011_01_raw.gpkg", delete_layer = TRUE)
+```

@@ -1,0 +1,88 @@
+---
+title: "Derive densification types"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(tidyverse)
+library(dplyr)
+library(sf)
+library(uuid)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+* Results of the building evolution process (Output files of the python process need to be copied manually to output-folder of the project.)
+
+```{r}
+bldg_evol_str <- st_read("./output/compdense_str_EVOLUTION.gpkg")
+bldg_evol_dor <- st_read("./output/compdense_dor_EVOLUTION.gpkg")
+bldg_evol_liv <- st_read("./output/compdense_liv_EVOLUTION.gpkg")
+```
+
+## Reduce complex output of building evolution to actual densification
+
+The building evolution process identifies every type of building change, like appeared, disappeared, split, merged, complex change. The latter are changes which are most likely changes in how the footprints were modeled. In reality, this does not mean that a building was e.g. subdivided in several housing units. Thus, we do not count them as densification. Only buildings which are labelled as appeared are considered relevant to measure densification. We compare them with disappeared buildings to understand if they are the result of reconstruction or infill. 
+
+```{r}
+derive_denstype <- function(bldg_evol_region) {
+  
+  ## Step 1: Add UUID field
+  bldg_evol_region <- bldg_evol_region %>%
+    mutate(id_univ = paste0("bldg_", row_number()))
+  
+  ## Step 2: Filter disappeared and appeared features
+  disappeared <- bldg_evol_region %>% filter(type == "disappeared")
+  appeared <- bldg_evol_region %>% filter(type == "appeared")
+  
+  ## Step 3: Identify appeared features touching disappeared ones
+  touched <- st_intersects(appeared, disappeared, sparse = FALSE)
+  appeared <- appeared %>%
+    mutate(reconstruction = apply(touched, 1, any)) %>%
+    st_drop_geometry()
+  
+  ## Step 4: Join reconstruction attribute back to full dataset
+  bldg_with_reconstruction <- left_join(bldg_evol_region,
+                                        appeared %>% select(id_univ, reconstruction),
+                                        by = "id_univ")
+  
+  ## Step 5: Derive densification type
+  bldg_with_densification <- bldg_with_reconstruction %>%
+    mutate(
+      denstype = case_when(
+        type == "appeared" & reconstruction == TRUE ~ "reconstruction",
+        type == "appeared" & reconstruction == FALSE ~ "infill",
+        type == "disappeared" ~ "disappeared",
+        TRUE ~ NA_character_
+      ),
+      denstype = if_else(is.na(denstype), "stable", denstype)
+    )
+  
+  bldg_with_densification
+  
+}
+```
+
+```{r}
+str_denstype <- derive_denstype(bldg_evol_str)
+dor_denstype <- derive_denstype(bldg_evol_dor)
+liv_denstype <- derive_denstype(bldg_evol_liv)
+```
+
+## Write results
+
+```{r}
+st_write(str_denstype, "./output/str_bldg_densetype.gpkg", delete_layer = TRUE)
+st_write(dor_denstype, "./output/dor_bldg_densetype.gpkg", delete_layer = TRUE)
+st_write(liv_denstype, "./output/liv_bldg_densetype.gpkg", delete_layer = TRUE)
+```

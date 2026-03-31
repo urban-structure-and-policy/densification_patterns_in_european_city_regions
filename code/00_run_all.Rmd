@@ -1,0 +1,344 @@
+---
+title: "Master Pipeline Script"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(rmarkdown)
+```
+
+## Set root directory
+
+Set path to your root directory here. 
+
+```{r setup, include=FALSE}
+my_wd <- "project_dir"
+
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+# 01. Deliminate case study regions
+
+Description: Calculates 30 Min. driving time isochrones. Isochrones are intersected with administrative boundaries.
+Before running: Create your API Key and insert it in the script. See details to create your own key: https://openrouteservice.org/. 
+
+```{r}
+render("./scripts/01_deliminate_case_study_regions.Rmd")
+```
+
+# 02. Prepare building data
+
+The following scripts load input data 2011 and 2021 and crop it to case study regions. Height information is joined to buildings 2021. Due to differences in the input data, we provide individual scripts for each country. 
+
+## 02a. Prepare building footprints and heights for Liverpool
+
+Description: Buildings of 2011 and 2021 are extracted from OS Mastermap and cropped to the case study area. Building height is linked to 2021 data.
+Further comments: OS MasterMap is provided in tiles. Join tiles and extract buildings. Add building heights using ID.
+
+```{r}
+render("./scripts/02a_data_prep_liv_footprint_heights.Rmd")
+```
+
+## 02b. Prepare building footprints and heights for Dortmund
+
+Description: Buildings of 2011 and 2021 are cropped to the case study area. Building height is linked to 2021 data.
+
+```{r}
+render("./scripts/02b_data_prep_dor_footprint_heights.Rmd")
+```
+
+## 02c. Prepare building footprints and heights for Strasbourg
+
+Description: Buildings of 2011 and 2021 are cropped to the case study area. Building height is already included in the data.
+
+```{r}
+render("./scripts/02c_data_prep_str_footprint_heights.Rmd")
+```
+
+## 02d. Pre-processing all building footprints
+
+Description: Load all building data, filter to larger 20 m² and save with reduced set of variables.
+
+```{r}
+render("./scripts/02d_data_prep_all_bldg_reduce.Rmd")
+```
+
+# 03. Identify building change
+
+Building change is calculated for all buildings, no matter if they are residential or not or if they are inside or outside built-up areas. A reduction to residential buildings inside built-up areas is implemented later. 
+
+## 03a. Run building evolution in python
+
+Description: Calculates Building change between t0 and t1. 
+Further comments: The process is provided in a separate github repository. Go to https://github.com/subdense/dashboard/blob/master/Processes/ComputeBuildingChange.md and follow the instructions there. Use the output of Step 2d as input. The code provided below can be used to start the processing in visual studio code, after everything is set up correctly. Output (e.g. compdense_str_EVOLUTION.gpkg) needs to be copied to the output folder for further processing in 03b. 
+
+```{r}
+# python run.py -layer1 ./output/dor_bldg_2011_02_filtered.gpkg -layer2 ./output/dor_bldg_2021_02_filtered.gpkg  -attributes "[\"oi\"]" -output_prefix compdense_dor
+
+# python run.py -layer1 ./output/liv_bldg_2011_02_filtered.gpkg -layer2 ./output/liv_bldg_2021_02_filtered.gpkg  -attributes "[\"fid_os\"]" -output_prefix compdense_liv
+
+# python run.py -layer1 ./output/str_bldg_2011_02_filtered.gpkg -layer2 ./output/str_bldg_2022_02_filtered.gpkg  -attributes "[\"ID\"]" -output_prefix compdense_str
+```
+
+## 03b. Post-processing to identify infill and reconstruction
+
+Description: Building evolution output is further processed to reduce changes to infill and reconstruction (see more details in the script). 
+
+```{r}
+render("./scripts/03b_derive_densificationtypes.Rmd")
+```
+
+# 04-06. Classification of building type
+
+For the analysis of residential densification, we need to differentiate buildings according to their use and type. We differentiate between residential and non-residential use and for each residential building we consider two types: Single-Family Houses (SFH) and Multi-Family Houses (MFH). We classify the buildings in t1. 
+
+For Liverpool we use official address data to identify building use and type. 
+For Dortmund and Strasbourg similar datasets with information on the building type are not available. Thus, we use a well-established supervised classification approach based on machine-learning to derive the building type based on morphological characteristics and estimate the building type of every building in the case study region (Hecht et al., 2015; Jehling & Hecht, 2022). Training data for this classification is collected manually, based on interpretation of aerial images. Details on how the training data was collected can be found here: https://github.com/itratfazal-ioer/Urban-Structure-and-Policy/tree/main/TrainingData_buildingClassification. For Dortmund, data on the building use helps to differentiate residential/non-residential buildings before differentiating SFH and MFH through the classification approach.
+
+## 04a. Derive building type liverpool
+
+Description: Buildings 2021 are linked to address base data, which contains building type information.
+
+```{r}
+render("./scripts/04a_buildingtype_liv.Rmd")
+```
+
+## 05a. Prepare input building metrics Dortmund
+
+Description: Prepares input needed to calculate buildings metrics for classification.
+Further comments: To derive urban metrics we need the street network, building blocks and address data.
+
+```{r}
+render("./scripts/05a_dor_prepare_input_bldg_metrics.Rmd")
+```
+
+## 05b. Calculate urban metrics Dortmund
+
+Description: Calculates urban metrics using an ArcToolbox in ArcGIS. 
+Further comments: 
+
+* Details on the building metrics calculated can be found in the 05b_dor_run_arctoolbox_old.txt
+* The toolbox can be provided upon request. 
+
+```{r}
+
+# In ArcPro - Export Feature Class to Geodatabase (add dor_input_bldg_metrics.gdb)
+# Run gebaeude_features_old.atbx ("./scripts/bldg_features/gebaeude_features_old.atbx")
+```
+
+## 05c. Prepare input for random forest classification Dortmund
+
+Description: Building metrics and training data is combined and prepared as input for RF.
+
+```{r}
+render("./scripts/05c_dor_combine_bldg_metrics_and_training_data.Rmd")
+```
+
+## 05d. Random forest for building classifiaction Dortmund
+
+Description: Trains RF and predicts building types.
+
+```{r}
+render("./scripts/05d_dor_random_forest_building_type.Rmd")
+```
+
+## 06a. Prepare input urban metrics Strasbourg
+
+Description: Prepares input needed to calculate buildings metrics for classification.
+Further comments: To derive urban metrics we need the street network, building blocks and address data. 
+
+```{r}
+render("./scripts/06a_str_prepare_input_bldg_metrics.Rmd")
+```
+
+## 06b. Calculate urban metrics Strasbourg
+
+Description: Calculates urban metrics using an ArcToolbox in ArcGIS. 
+Further comments: 
+
+* Details on the building metrics calculated can be found in the 06b_str_run_arctoolbox_old.txt
+* The toolbox can be provided upon request. 
+
+```{r}
+# The output of 06a is saved as shapefile (directly exporting gdb from R does not work). 
+# In ArcPro - Export Feature Class to Geodatabase (add str_input_bldg_metrics.gdb)
+# Run gebaeude_features_old.atbx ("./scripts/bldg_features/gebaeude_features_old.atbx")
+```
+
+## 06c. Prepare input for random forest classification Strasbourg
+
+Description: Building metrics and training data is combined and prepared as input for RF.
+
+```{r}
+render("./scripts/06c_str_combine_bldg_metrics_and_training_data.Rmd")
+```
+
+## 06d. Random forest for building classifiaction Strasbourg
+
+Description: Trains RF and predicts building types.
+
+```{r}
+render("./scripts/06d_str_random_forest_building_type.Rmd")
+```
+
+# 07-09. Prepare contextual information
+
+## 07. Prepare Corine land cover
+
+Description: Crops CLC2012 to case study regions and derives urban mask and land use 2012.
+
+```{r}
+render("./scripts/07_prepare_clc.Rmd")
+```
+
+## 08. Prepare GHS-Pop
+
+Description: Crops GHS-Pop to case study regions and calculates mean_pop per raster.
+
+```{r}
+render("./scripts/08_prepare_ghs_pop.Rmd")
+```
+
+# 09. Prepare Closeness centrality measures
+
+We calculate a centrality measure that describes the location of a building in relation to all other inhabited places in a region. We apply a network-based approach to the regional road network and calculate closeness centrality, where every location is described through the mean travel time to other locations on the road network using OpenRouteService (openrouteservice.org by HeiGIT). 
+
+Before running: 
+
+* Set up your own openrouteservice instance. See details here: https://giscience.github.io/openrouteservice/run-instance/
+* Install ORSTools QGIS Plugin: https://github.com/GIScience/orstools-qgis-plugin
+* Set your local instance as provider for the plugin
+
+## 09a. Prepare CCI
+
+Description: Prepares folders and input data for CCI calculation in QGIS with python script.
+
+```{r}
+render("./scripts/09a_prepare_cci.Rmd")
+```
+
+## 09b. Step 1 CCI calculation Python script in QGIS
+
+Description: Loads street network from OSM. Projection of a point grid of any grid width onto a road network, adding the number of inhabitants to points.
+
+```{r}
+# Run script (09b_OSM_highways2points+einwohner.py) in QGIS Python console
+# change name of the case study region in the first lines: dor, str, liv
+```
+
+## 09c. Step 2 Centrality 50 %
+
+Description: Selection of 50 % of all points, requests to local ORS instance - OD matrix is created from each starting point to all target points
+
+```{r}
+# Run script (09c_Centrality_50Prozent.py) in QGIS Python console
+# change name of the case study region in the first lines: dor, str, liv
+```
+
+## 09d. Load matrix and calculate cci values
+
+Description: Merge all matrices, calculate mean values and weights for each point, eliminate extreme values.
+
+```{r}
+render("./scripts/09d_R_Script_50perc.Rmd")
+```
+
+## 09e. Interpolate data to a 500x500 m grid
+
+Description: Runs IDW interpolation on a 500m grid. 
+
+```{r}
+render("./scripts/09e_idw_interpolation_script.Rmd")
+```
+
+# 10. Derive densification projects
+
+To distinguish densification patterns, the measured residential densification on building level requires a spatial contextualisation. Buildings are grouped to projects following a density-based distance-based clustering approach. Each densification project is described by the number of buildings, new building volume, and the predominant building type categorised as SFH or MFH based on the majority of respective building footprint area. 
+
+## 10a. Join data of all previous steps and derive projects
+
+Description: Joins data generated in the previous steps. Identifies densification projects using density-based clustering. 
+
+```{r}
+render("./scripts/10a_join_all_data_previous_steps.Rmd")
+```
+
+## 10b. Derive project type
+
+Description: Derives project types based on number and volume of buildings and building type. Deliminates urban densification projects from urban expansion. 
+
+```{r}
+render("./scripts/10b_derive_projecttype.Rmd")
+```
+
+
+
+# Information on R Version and packages used to run all scripts above
+
+R version 4.4.0 (2024-04-24 ucrt)
+Platform: x86_64-w64-mingw32/x64
+Running under: Windows 10 x64 (build 19045)
+
+Matrix products: default
+
+
+locale:
+[1] LC_COLLATE=German_Germany.utf8  LC_CTYPE=German_Germany.utf8    LC_MONETARY=German_Germany.utf8 LC_NUMERIC=C                    LC_TIME=German_Germany.utf8    
+
+time zone: Europe/Berlin
+tzcode source: internal
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] e1071_1.7-14           pROC_1.18.5            ROSE_0.0-4             caret_6.0-94           lattice_0.22-6         randomForest_4.7-1.1   sp_2.1-4              
+ [8] gstat_2.1-3            scales_1.3.0           terra_1.8-42           uuid_1.2-0             openrouteservice_0.6.2 lubridate_1.9.3        forcats_1.0.0         
+[15] stringr_1.5.1          dplyr_1.1.4            purrr_1.0.2            readr_2.1.5            tidyr_1.3.1            tibble_3.2.1           ggplot2_3.5.1         
+[22] tidyverse_2.0.0        sf_1.0-16              rmarkdown_2.26        
+
+loaded via a namespace (and not attached):
+ [1] DBI_1.2.2            rlang_1.1.3          magrittr_2.0.3       compiler_4.4.0       reshape2_1.4.4       vctrs_0.6.5          pkgconfig_2.0.3     
+ [8] fastmap_1.1.1        geojsonsf_2.0.3      utf8_1.2.4           prodlim_2023.08.28   tzdb_0.4.0           xfun_0.43            jsonlite_1.8.8      
+[15] recipes_1.0.10       parallel_4.4.0       R6_2.5.1             stringi_1.8.4        parallelly_1.37.1    rpart_4.1.23         Rcpp_1.0.12         
+[22] assertthat_0.2.1     iterators_1.0.14     knitr_1.46           future.apply_1.11.2  zoo_1.8-14           FNN_1.1.4.1          Matrix_1.7-0        
+[29] splines_4.4.0        nnet_7.3-19          timechange_0.3.0     tidyselect_1.2.1     rstudioapi_0.16.0    yaml_2.3.8           timeDate_4032.109   
+[36] codetools_0.2-20     curl_5.2.1           listenv_0.9.1        intervals_0.15.5     plyr_1.8.9           withr_3.0.0          evaluate_0.23       
+[43] future_1.33.2        survival_3.5-8       units_0.8-5          proxy_0.4-27         xts_0.14.1           xml2_1.3.6           pillar_1.9.0        
+[50] KernSmooth_2.23-22   stats4_4.4.0         foreach_1.5.2        generics_0.1.3       spacetime_1.3-3      hms_1.1.3            munsell_0.5.1       
+[57] globals_0.16.3       class_7.3-22         glue_1.7.0           tools_4.4.0          data.table_1.15.4    ModelMetrics_1.2.2.2 gower_1.0.1         
+[64] grid_4.4.0           jsonvalidate_1.5.0   crosstalk_1.2.1      ipred_0.9-14         colorspace_2.1-0     nlme_3.1-164         cli_3.6.2           
+[71] fansi_1.0.6          lava_1.8.0           keyring_1.3.2        V8_6.0.3             gtable_0.3.5         digest_0.6.35        classInt_0.4-10     
+[78] htmlwidgets_1.6.4    htmltools_0.5.8.1    lifecycle_1.0.4      leaflet_2.2.2        hardhat_1.3.1        httr_1.4.7           MASS_7.3-60.2       
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,255 @@
+---
+title: "Join data of all previous steps and derive projects"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(tidyverse)
+library(sf)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+* Densification dataset: Contains output of building evolution and the resulting densification type; it also includes disappeared buildings, which were there in 2011
+* Buildings type: Contains output of building type classification
+
+```{r}
+dor_densification <- read_sf("./output/dor_bldg_densetype.gpkg") %>% 
+  filter(id_univ != "bldg_182552") # id_bldg = DENW01AL1000CkwP - check in previous files
+dor_bldgtype <- read_sf("./output/dor_bldg_2021_03_bldg_type.gpkg") %>% st_drop_geometry()
+
+str_densification <- read_sf("./output/str_bldg_densetype.gpkg") 
+str_bldgtype <- read_sf("./output/str_bldg_2022_03_bldg_type.gpkg") %>% st_drop_geometry()
+
+liv_densification <- read_sf("./output/liv_bldg_densetype.gpkg") 
+liv_bldgtype <- read_sf("./output/liv_bldg_2021_03_bldg_type.gpkg") %>% st_drop_geometry()
+```
+
+# Join data
+
+## Filter disappeared buildings, join building type information and rename variables
+
+```{r}
+# Dortmund
+# Building type: Results of random forest classification; for Dortmund we only classified buildings which were "res" based on the authorative building use information; some garages and smaller auxiliary buildings were also "res"; they are classified as pred_bldg_type == 99 and should also be added to "non-res"
+dor_dat <- dor_densification %>% 
+  filter(denstype != "disappeared") %>%  
+  transmute(id_bldg = oi_2, denstype) %>% 
+  left_join(dor_bldgtype %>% mutate(id_bldg = oi)) %>% 
+  transmute(id_bldg,
+            bldg_height = Gebaeude_H,
+            area_foot, res_non_res, pred_bldg_type, denstype) %>% 
+# Assign class 99 to non_res; create sfh_mfh variable and filter variable dens_res_fin  
+  mutate(res_non_res = if_else(res_non_res == "non_residential", "non_res", "res"),
+         res_non_res = if_else(res_non_res == "res" & pred_bldg_type == 99, "non_res", res_non_res),
+         sfh_mfh = if_else(pred_bldg_type == 10, "mfh", "other"),
+         sfh_mfh = if_else(pred_bldg_type == 30, "sfh", sfh_mfh),
+         sfh_mfh = if_else(is.na(sfh_mfh), "other", sfh_mfh),
+         bldg_vol = area_foot*bldg_height) %>% 
+  mutate(dens_res_fin = if_else(res_non_res == "res" & denstype %in% c("reconstruction", "infill") , "dens_res", "other"))
+
+# Strasbourg
+str_dat <- str_densification %>% 
+  filter(denstype != "disappeared") %>%  
+  transmute(id_bldg = ID_2, denstype) %>% 
+  left_join(str_bldgtype %>% mutate(id_bldg = ID)) %>% 
+  transmute(id_bldg,
+            bldg_height = Gebaeude_H,
+            area_foot, pred_bldg_type, denstype) %>% 
+  mutate(res_non_res = if_else(pred_bldg_type %in% c("aux", "non_res"), "non_res", "res"),
+         sfh_mfh = if_else(pred_bldg_type == "MFH", "mfh", "other"),
+         sfh_mfh = if_else(pred_bldg_type == "SFH", "sfh", sfh_mfh),
+         sfh_mfh = if_else(is.na(sfh_mfh), "other", sfh_mfh),
+         bldg_vol = area_foot*bldg_height) %>% 
+  mutate(dens_res_fin = if_else(res_non_res == "res" & denstype %in% c("reconstruction", "infill") , "dens_res", "other"))
+
+# Liverpool
+liv_dat <- liv_densification %>% 
+  filter(denstype != "disappeared") %>%  
+  transmute(id_bldg = fid_os_2, denstype) %>% 
+  left_join(liv_bldgtype %>% mutate(id_bldg = fid_os)) %>% 
+  transmute(id_bldg,
+            bldg_height = RelH2,
+            area_foot, sfh_mfh, denstype) %>% 
+  mutate(res_non_res = if_else(is.na(sfh_mfh), "non_res", "res"),
+         sfh_mfh = if_else(is.na(sfh_mfh), "other", sfh_mfh),
+         bldg_vol = area_foot*bldg_height) %>% 
+  mutate(dens_res_fin = if_else(res_non_res == "res" & denstype %in% c("reconstruction", "infill") , "dens_res", "other"))
+```
+
+## Function DB Scan clusters for densification projects
+
+```{r}
+run_dbscan <- function(region_dat) {
+  
+  # Filter to densification
+  dens <- region_dat %>%
+    filter(dens_res_fin == "dens_res")
+  
+  # Compute Centroids
+  centroids <- st_centroid(dens) %>%
+    select(id_bldg)
+  
+  # DBSCAN Clustering
+  # Extract coordinates
+  coords <- st_coordinates(centroids)
+  
+  # Run DBSCAN: We set a minimum cluster size of 3 buildings and a cut-off distance of 60 m
+  db <- dbscan::dbscan(coords, eps = 60, minPts = 3)
+  
+  # Add clustering info
+  centroids$CLUSTER_ID <- db$cluster
+  
+  # Derive ID and cluster size
+  centroids_id <- centroids %>%
+    arrange(CLUSTER_ID) %>%
+    mutate(
+      cluster_id = if_else(
+        CLUSTER_ID == 0,
+        paste0("ncl_", row_number()),
+        paste0("cl_", CLUSTER_ID)
+      ),
+      cluster_size = ifelse(CLUSTER_ID == 0, 1, ave(cluster_id, cluster_id, FUN = length))
+    ) %>%
+    select(-CLUSTER_ID)
+  
+  ## Join Back to Original Data
+  bldg_dens_dbscan <- left_join(region_dat, centroids_id %>% st_drop_geometry(), by = "id_bldg")
+  
+  # return dataframe
+  return(bldg_dens_dbscan)
+  
+}
+```
+
+```{r}
+str_dbscan <- run_dbscan(str_dat)
+dor_dbscan <- run_dbscan(dor_dat)
+liv_dbscan <- run_dbscan(liv_dat)
+```
+
+## Function Create Polygons for projects
+
+By buffering the buildings and merging them by cluster_id, we create project polygons. 
+
+```{r}
+create_polygons_projects <- function(region_dbscan) {
+  
+  # fitler to densification
+  dat <- region_dbscan  %>%
+    filter(dens_res_fin == "dens_res")
+  
+  # Buffer +20 Meters
+  buffered_20 <- st_buffer(dat, dist = 20)
+  
+  # Dissolve by 'cluster_id'
+  dissolved <- buffered_20 %>%
+    group_by(cluster_id) %>%
+    summarise(geometry = st_union(geom), .groups = "drop")
+  
+  # Multipart to Singleparts
+  # singleparts <- st_cast(dissolved, "POLYGON")
+  
+  # Delete Holes: Remove holes by keeping only exterior rings
+  remove_holes <- function(polygon) {
+    if (inherits(polygon, "POLYGON")) {
+      st_polygon(list(polygon[[1]]))  # Keep only exterior ring
+    } else {
+      polygon  # Return as-is for non-polygon geometries
+    }
+  }
+  
+  cleaned <- st_geometry(dissolved) %>%
+    lapply(remove_holes) %>%
+    st_sfc(crs = st_crs(dissolved))
+  
+  dissolved$geometry <- cleaned
+  
+  ## Buffer -15 Meters
+  projects_dens <- st_buffer(dissolved, dist = -15)
+  
+  ## Add Area Field
+  projects_dens$proj_area <- as.numeric(st_area(projects_dens))
+  
+  # return dataframe
+  return(projects_dens)
+  
+}
+```
+
+```{r}
+str_poly_projects <- create_polygons_projects(str_dbscan)
+dor_poly_projects <- create_polygons_projects(dor_dbscan)
+liv_poly_projects <- create_polygons_projects(liv_dbscan)
+```
+
+
+# Function to join corine land use information, ghs pop and cci to data
+
+```{r}
+join_clc_cci_ghs <- function(region, region_dbscan) {
+  
+  clc <- st_read(paste0("./output/", region, "_clc_landuse.gpkg"))
+  ghs <- st_read(paste0("./output/", region, "_ghs_pop.gpkg"))
+  cci <- st_read(paste0("./output/", region, "_cci_fin.gpkg"))
+  
+  # Create centroids of buildings for spatial join
+  centroids <- st_centroid(region_dbscan) %>%
+    select("id_bldg")
+  
+  # Make sure that crs is correct and reduce var
+  clc <- st_transform(clc, st_crs(centroids)) %>%
+    transmute(
+      clc_code_simple = code_simple,
+      clc_code_nam = code_nam,
+      clc_inside = "inside"
+    )
+  
+  ghs <- st_transform(ghs, st_crs(centroids))
+  
+  cci <- st_transform(cci, st_crs(centroids)) %>%
+    transmute(cci = new_m_w_n_idw)
+  
+  # join attributes by location
+  joined <- st_join(centroids, clc, .predicate = st_intersects) %>%
+    st_join(ghs, .predicate = st_intersects) %>%
+    st_join(cci, .predicate = st_intersects)
+  
+  # join back to overall data
+  bldg_dat_fin <- region_dbscan %>%
+    left_join(joined %>% st_drop_geometry())
+  
+  # return dataframe
+  return(bldg_dat_fin)
+  
+}
+```
+
+```{r}
+str_bldg_dat_fin <- join_clc_cci_ghs("str", str_dbscan)
+dor_bldg_dat_fin <- join_clc_cci_ghs("dor", dor_dbscan)
+liv_bldg_dat_fin <- join_clc_cci_ghs("liv", liv_dbscan)
+```
+
+## Write results
+
+```{r}
+st_write(str_bldg_dat_fin, "./output/str_bldg_2022_04_all_dens.gpkg", delete_layer = TRUE)
+st_write(str_poly_projects, "./output/str_projects_01_dens.gpkg", delete_layer = TRUE)
+
+st_write(dor_bldg_dat_fin, "./output/dor_bldg_2021_04_all_dens.gpkg", delete_layer = TRUE)
+st_write(dor_poly_projects, "./output/dor_projects_01_dens.gpkg", delete_layer = TRUE)
+
+st_write(liv_bldg_dat_fin, "./output/liv_bldg_2021_04_all_dens.gpkg", delete_layer = TRUE)
+st_write(liv_poly_projects, "./output/liv_projects_01_dens.gpkg", delete_layer = TRUE)
+```

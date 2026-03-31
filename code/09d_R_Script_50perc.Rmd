@@ -1,0 +1,90 @@
+---
+title: "CCI calculation"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(sf)
+library(dplyr)
+library(tidyverse)
+library(readr)
+library(scales)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Define data
+
+```{r}
+region <- 'str'
+date <- '25_05_21'
+folder <- paste(my_wd, '/output/cci/output/', region, '_50perc_', date, '/', sep = '')
+
+region_shape <- read_sf(dsn = paste(my_wd, '/output/cci/input/csr/', region, '.shp', sep = ''), layer = region)
+```
+
+## Load Data
+
+```{r}
+## 1. merge single matrices and delete rows with 0
+df <- list.files(path=paste(folder,'Matrizen/', sep = ''),full.names = TRUE) %>% lapply(read_csv) %>% bind_rows
+df.0 <- filter(df,DURATION_H != 0)
+
+## 2. add number of inhabitants from target geometries, calculate weighting column
+destins <- read_sf(dsn = paste(folder, 'destination_points_1000mgrid_',region,'50perc.shp', sep = ''), layer = paste('destination_points_1000mgrid_',region,'50perc',sep = ''))
+joined <- left_join(df.0, destins, join_by(TO_ID==id))
+joined <- mutate(joined, weight = DURATION_H * EW_10 )
+```
+
+## Process data
+
+```{r}
+## 3. centrality calculation via inverse mean (weighted) journey time per starting point
+joined_n <- joined %>% group_by(FROM_ID) %>% summarise_at("DURATION_H", list(mean = mean), na.rm = TRUE)
+joined_n <- mutate(joined_n, mean_inv = 1/mean )
+joined_w <- joined %>% group_by(FROM_ID) %>% summarise_at("weight", list(mean_w = mean), na.rm = TRUE)
+joined_w <- mutate(joined_w, mean_w_inv = 1/mean_w )
+centrality <- full_join(joined_n,joined_w, by = "FROM_ID")
+centrality <- subset(centrality, select = -c(mean, mean_w))
+
+## 4. join and save centrality values to starting points
+region_points <- read_sf(dsn = paste(folder,region,'10perc_ew.shp', sep = ''), layer = paste(region,'10perc_ew', sep = ''))
+centrality_points <- left_join(region_points, centrality, join_by(id == FROM_ID))
+
+## 5. cut to region
+st_crs(region_shape)==st_crs(centrality_points)
+cropped <- centrality_points[region_shape, ]
+plot(cropped)
+
+## 6. elimination of islands by omitting the top 1%
+grenze <- quantile(cropped$mean_w_inv, .99, na.rm = TRUE)
+
+ohneInseln <- filter(cropped,mean_w_inv < grenze )
+plot(ohneInseln)
+ohneInseln$new_m_w_n <- ohneInseln$mean_w_inv
+ohneInseln$new_m_w_n <- rescale(ohneInseln$new_m_w_n)
+ohneInseln <- subset(ohneInseln, select = -c(EW1_sum,EW_2,EW1_sum_2))
+```
+
+## Plot data
+
+```{r}
+plot(centrality_points)
+plot(ohneInseln)
+```
+
+## Write output
+
+```{r}
+st_write(centrality_points, paste(folder,'centrality_', region, '_50perc_inBuffer.shp', sep = ''), append = FALSE)
+st_write(ohneInseln,paste(folder,'centrality_',region,'_50perc_oA.shp', sep = ''), append = FALSE)
+```
+

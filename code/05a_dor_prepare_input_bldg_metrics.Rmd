@@ -1,0 +1,59 @@
+---
+title: "Prepare input building metrics Dortmund"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(sf)
+library(dplyr)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+```{r}
+dor_bldg_21 <- st_read("./output/dor_bldg_2021_02_filtered.gpkg")
+dor_case <- st_read("./output/dor_iso30_VWG_dissolved.gpkg")
+
+dor_blocks <- st_read("./input/sie02_f.shp")
+dor_streets <- st_read("./input/ver01_l.shp")
+dor_address <- st_read("./input/GA_2022.gdb", layer = "nr_nw")
+```
+
+## Crop datasets to case study region
+
+```{r}
+dor_blocks <- st_transform(dor_blocks, st_crs(dor_case))
+dor_streets <- st_transform(dor_streets, st_crs(dor_case))
+dor_address <- st_transform(dor_address, st_crs(dor_case))
+
+dor_blocks_cs <- st_filter(dor_blocks, dor_case, .predicate = st_intersects)
+dor_streets_cs <- st_filter(dor_streets, dor_case, .predicate = st_intersects)
+dor_address_cs <- st_filter(dor_address, dor_case, .predicate = st_intersects)
+```
+
+## Write results
+
+Output needs to be saved as shapefiles, because it is used as input to an ArcPro process which cannot handle geopackage. 
+
+```{r}
+# create directory
+dir.create("./output/dor_input_bldg_metrics")
+
+## as shapefiles
+# remove bldg_function to avoid abbrevation of varnames
+st_write(dor_bldg_21 %>% select(-bldg_function),  "./output/dor_input_bldg_metrics/dor_bldg.shp", delete_layer = TRUE)
+st_write(dor_blocks_cs, "./output/dor_input_bldg_metrics/dor_blocks.shp", delete_layer = TRUE)
+st_write(dor_streets_cs, "./output/dor_input_bldg_metrics/dor_streets.shp", delete_layer = TRUE)
+st_write(dor_address_cs, "./output/dor_input_bldg_metrics/dor_address.shp", delete_layer = TRUE)
+```
+

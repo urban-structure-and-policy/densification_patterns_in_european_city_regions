@@ -1,0 +1,185 @@
+---
+title: "Pre-processing all building footprints"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(tidyverse)
+library(sf)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+```{r}
+dor_bldg_11 <- read_sf("./output/dor_bldg_2011_01_raw.gpkg") 
+dor_bldg_21 <- read_sf("./output/dor_bldg_2021_01_ha_raw.gpkg") 
+
+str_bldg_11 <- read_sf("./output/str_bldg_2011_01_raw.gpkg") 
+str_bldg_22 <- read_sf("./output/str_bldg_2022_01_ha_raw.gpkg") 
+
+liv_bldg_11 <- read_sf("./output/liv_bldg_2011_01_raw.gpkg") 
+liv_bldg_21 <- read_sf("./output/liv_bldg_2021_01_ha_raw.gpkg") 
+```
+
+## Pre-processing building data
+
+We filter the building data to footprints >= 20 m², as we expect these buildings to be non-residential. By doing so, we reduce processing time for the next steps.
+
+## Strasbourg 
+```{r}
+str_bldg_11_filter <- str_bldg_11 %>% 
+  transmute(ID,
+            area_foot = as.numeric(st_area(geom))) %>% 
+  filter(area_foot >= 20)
+
+str_bldg_22_filter <- str_bldg_22 %>% 
+  transmute(ID,
+            area_foot = as.numeric(st_area(geom)),
+            peri_foot = as.numeric(st_perimeter(geom)),
+            Gebaeude_H = HAUTEUR) %>% 
+  filter(area_foot >= 20)
+```
+
+## Liverpool
+```{r}
+liv_bldg_11_filter <- liv_bldg_11 %>%
+  transmute(fid_os,
+            area_foot = as.numeric(st_area(geom))) %>% 
+  filter(area_foot >= 20) 
+
+liv_bldg_21_filter <- liv_bldg_21 %>% 
+  transmute(fid_os,
+            area_foot = as.numeric(st_area(geom)),
+            peri_foot = as.numeric(st_perimeter(geom)),
+            Gebaeude_H = RelH2,
+            RelHMax, RelH2) %>% 
+  filter(area_foot >= 20)
+```
+
+## Dortmund
+
+```{r}
+dor_bldg_11_filter <- dor_bldg_11 %>% 
+  transmute(oi = row_number(),
+            area_foot = as.numeric(st_area(geom))) %>% 
+  filter(area_foot >= 20)
+```
+
+### Dortmund 2021 
+
+In the Dortmund data for 2021 there are some duplicates in the 2021 data which result from matching the height information - need to be reduced. Further, for Dortmund a simplified version of the building function (residential/non_residential) is created. 
+
+```{r}
+# Treating duplicates
+duplicates <- dor_bldg_21 %>% 
+  st_drop_geometry() %>% 
+  group_by(oi) %>% 
+  summarise(n = n())
+
+## Identify duplicates and reduce to one case
+dup_reduced <- dor_bldg_21 %>% 
+  st_drop_geometry() %>% 
+  left_join(duplicates) %>% 
+  filter(n > 1) %>% 
+  group_by(oi) %>% 
+  summarise(ags = paste(sort(unique(ags)) , collapse = ", "),
+            ars = paste(sort(unique(ars)) , collapse = ", "),
+            gfk = paste(sort(unique(gfk)) , collapse = ", "),
+            bldg_measured_height = mean(bldg_measured_height,
+            bldg_function = paste(sort(unique(bldg_function)) , collapse = ", "))) %>% 
+  ungroup() %>% 
+  left_join(dor_bldg_21 %>% select(oi), multiple = "first")
+  
+## Join back to original data
+dor_bldg_21_reduced <- dor_bldg_21 %>% 
+  left_join(duplicates) %>% 
+  filter(n <= 1) %>% 
+  bind_rows(dup_reduced) 
+
+# Filter to footprints >= 20 and prepare simplified building function
+dor_bldg_21_filter <- dor_bldg_21_reduced %>% 
+  transmute(oi, 
+            Gebaeude_H = bldg_measured_height, 
+            bldg_function,
+            area_foot = as.numeric(st_area(geom)),
+            peri_foot = as.numeric(st_perimeter(geom))) %>% 
+  filter(area_foot >= 20) %>% 
+  # derive simple building function
+  mutate(gfk_general = if_else(str_starts(bldg_function, pattern = "31001_10"), "Wohngebäude", "x"),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_11"), "Gemischt genutztes Gebäude mit Wohnen", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_12"), "Land- und forstwirtschaftliches Wohngebäude", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_13"), "Gebäude zur Freizeitgestaltung", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_20"), "Gebäude für Wirtschaft oder Gewerbe", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_21"), "Gebäude für Gewerbe und Industrie", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_22"), "Sonstiges Gebäude für Gewerbe und Industrie", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_23"), "Gebäude für Handel und Dienstleistung mit Wohnen", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_24"), "Betriebsgebäude zu Verkehrsanlagen", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_25"), "Gebäude zur Versorgung", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_26"), "Gebäude zur Entsorgung", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_27"), "Gebäude für Land- und Forstwirtschaft", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_30"), "Gebäude für öffentliche Zwecke", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_31"), "Gebäude für öffentliche Zwecke mit Wohnen", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_32"), "Gebäude für Erholungszwecke", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "31001_99"), "Nach Quellenlage nicht zu spezifizieren", gfk_general),
+         gfk_general = if_else(str_starts(bldg_function, pattern = "5"), "Bauwerke", gfk_general),
+         
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_10"), "Wohnen", "x"),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_11"), "Wohnen", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_12"), "Wohnen", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_13"), "Oeffentlich_Erholung_Freizeit", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_20"), "Ind_Gewerbe", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_21"), "Ind_Gewerbe", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_22"), "Ind_Gewerbe", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_23"), "Wohnen", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_24"), "Garagen", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_25"), "Andere", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_26"), "Andere", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_27"), "Andere", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_30"), "Oeffentlich_Erholung_Freizeit", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_31"), "Wohnen", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_32"), "Oeffentlich_Erholung_Freizeit", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "31001_99"), "Andere", gfk_aggregated),
+         gfk_aggregated = if_else(str_starts(bldg_function, pattern = "5"), "Andere", gfk_aggregated)) %>% 
+  mutate(res_non_res = if_else(gfk_aggregated == "Wohnen", "residential", "non_residential"))
+
+dor_bldg_21_filter %>% 
+  st_drop_geometry() %>% 
+  group_by(gfk_aggregated) %>% 
+  summarise(n = n())
+```
+
+## Write results
+
+```{r}
+st_write(str_bldg_11_filter, "./output/str_bldg_2011_02_filtered.gpkg", delete_layer = TRUE)
+st_write(str_bldg_22_filter, "./output/str_bldg_2022_02_filtered.gpkg", delete_layer = TRUE)
+
+st_write(dor_bldg_11_filter, "./output/dor_bldg_2011_02_filtered.gpkg", delete_layer = TRUE)
+st_write(dor_bldg_21_filter, "./output/dor_bldg_2021_02_filtered.gpkg", delete_layer = TRUE)
+
+st_write(liv_bldg_11_filter, "./output/liv_bldg_2011_02_filtered.gpkg", delete_layer = TRUE)
+st_write(liv_bldg_21_filter, "./output/liv_bldg_2021_02_filtered.gpkg", delete_layer = TRUE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,172 @@
+---
+title: "Deliminate case study regions"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(sf)
+library(tidyverse)
+library(openrouteservice)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+```{r}
+# Administrative entities for each case study region
+str_geographies <- st_read("./input/commune_20perc.gpkg") %>% 
+  transmute(nom)
+
+dor_geographies <- st_read("./input/VG25_VWG_20perc.gpkg") %>% 
+  transmute(GEN)
+
+liv_geographies <- st_read("./input/LSOA_20perc.gpkg") %>% 
+  transmute(LSOA21NM)
+```
+
+## Define further inputs
+
+API Key for openrouteservice
+See details to create your own key: https://openrouteservice.org/
+
+```{r}
+my_ors_key <- "insert your api key here"
+```
+
+## Create central point for each case study region
+
+For each case study region we selected a central place within the main urban center. We derive the lon/lat coordinates. 
+The following locations were selected:
+
+* Strasbourg, Place Kleber 
+* Dortmund, Alter Markt
+* Liverpool, Derby Square
+
+```{r}
+str_cp <- st_point(c(7.745951, 48.583398), dim = "XY")  
+dor_cp <- st_point(c(7.465957, 51.51376), dim = "XY")  
+liv_cp <- st_point(c(-2.99004, 53.40478), dim = "XY")  
+```
+
+## Calculate isochrones
+
+Driving time isochrones with a 30 minutes range.
+Function needs your personal api key. 
+
+```{r}
+create_isochrones <- function(region_cp, my_ors_key) {
+  iso_result <- ors_isochrones(
+    locations = st_coordinates(region_cp),
+    profile = "driving-car",
+    api_key = my_ors_key,
+    range = 1800,
+    output = "sf"
+  )
+  
+  iso_result
+}
+```
+
+```{r}
+str_iso <- create_isochrones(str_cp, my_ors_key)
+dor_iso <- create_isochrones(dor_cp, my_ors_key)
+liv_iso <- create_isochrones(liv_cp, my_ors_key)
+```
+
+
+## Reduce geographies according to isochrones
+
+```{r}
+reduce_geographies <- function(region_iso, region_geographies) {
+  
+  region_iso <- st_transform(region_iso, st_crs(region_geographies))
+  
+  region_geographies <- region_geographies %>% 
+    mutate(UUID = uuid::UUIDgenerate(n = nrow(region_geographies), output = "string"))
+  
+  ## Extract Features by Location (Intersection)
+  intersected <- region_geographies[st_intersects(region_geographies, region_iso, sparse = FALSE), ]
+  
+  ## Add area
+  intersected <- intersected %>%
+    mutate(area = st_area(.) %>% as.numeric())
+  
+  ## Overlap with Isochrones and calculate area inside
+  overlap <- st_intersection(intersected, region_iso) %>% 
+    mutate(area_in = st_area(.) %>% as.numeric())
+  
+  ## Join Area Inside Back by UUID and calculate percentage inside
+  result <- intersected %>%
+    left_join(intersected %>% st_drop_geometry()) %>% 
+    left_join(overlap %>% 
+              st_drop_geometry() %>% 
+              select(UUID, area_in), by = "UUID") %>% 
+   mutate(perc_inside = area_in / area)
+
+  result
+}
+```
+
+```{r}
+str_geographies_reduced <- reduce_geographies(str_iso, str_geographies)
+dor_geographies_reduced <- reduce_geographies(dor_iso, dor_geographies)
+liv_geographies_reduced <- reduce_geographies(liv_iso, liv_geographies)
+```
+
+
+## Filter to final output
+
+We filter to geographies which overlap with a minimum of 40 %. We tested several thresholds with little difference. 
+In Liverpool we include some geographies manually, as they are surrounded by other geographies which touch the isochrone and would thus form holes in our case study region. In Dortund we include Unna manually, because a main part of the settlement area can be reached within the isochrone what is not represented in the share. 
+
+```{r}
+str_geographies_result <- str_geographies_reduced %>% 
+  filter(perc_inside >= 0.4)
+
+dor_geographies_result <- dor_geographies_reduced %>% 
+  filter(perc_inside >= 0.4 | GEN == "Unna")
+
+liv_geographies_result <- liv_geographies_reduced %>% 
+  filter(perc_inside >= 0.4 | LSOA21NM %in% c("Sefton 028C", "Sefton 013B", "Sefton 013D", "Sefton 015C", "Halton 008C", "Wirral 040B"))
+```
+
+## Create dissolved layer
+
+```{r}
+str_result_dissolved <- str_geographies_result %>% 
+  group_by() %>%
+  summarise(geom = st_union(geom)) 
+
+dor_result_dissolved <- dor_geographies_result %>% 
+  group_by() %>%
+  summarise(geom = st_union(geom)) 
+
+liv_result_dissolved <- liv_geographies_result %>% 
+  group_by() %>%
+  summarise(geom = st_union(geom)) 
+```
+
+## Write results
+
+```{r}
+st_write(str_iso %>% select(-center), "./output/str_iso30.gpkg", delete_layer = TRUE)
+st_write(str_geographies_result, "./output/str_iso30_commune.gpkg", delete_layer = TRUE)
+st_write(str_result_dissolved, "./output/str_iso30_commune_dissolved.gpkg", delete_layer = TRUE)
+
+st_write(dor_iso %>% select(-center), "./output/dor_iso30.gpkg", delete_layer = TRUE)
+st_write(dor_geographies_result, "./output/dor_iso30_VWG.gpkg", delete_layer = TRUE)
+st_write(dor_result_dissolved, "./output/dor_iso30_VWG_dissolved.gpkg", delete_layer = TRUE)
+
+st_write(liv_iso %>% select(-center), "./output/liv_iso30.gpkg", delete_layer = TRUE)
+st_write(liv_geographies_result, "./output/liv_iso30_LSOA.gpkg", delete_layer = TRUE)
+st_write(liv_result_dissolved, "./output/liv_iso30_LSOA_dissolved.gpkg", delete_layer = TRUE)
+```

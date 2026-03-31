@@ -1,0 +1,73 @@
+---
+title: "Prepare input building metrics Strasbourg"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(sf)
+library(dplyr)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+```{r}
+str_bldg_21 <- st_read("./output/str_bldg_2022_02_filtered.gpkg")
+str_case <- st_read("./output/str_iso30_commune_dissolved.gpkg")
+
+
+str_blocks <- st_read("./input/bldg_classification/02_BuildingBlocks.gpkg")
+str_streets <- st_read("./input/bldg_classification/TRONCON_DE_ROUTE.shp")
+
+# Address layer exists in BDTOPT but is not comprehensive - many buildings do not have any address points. 
+# As a workaround, we produce centroids for the buildings, as they are an obligatory input in the ArcToolbox.
+# str_address <- st_read("G:/ai_daten/P1047_SUBDENSE/01_raw_data/France/BD_Topo/2022/BDTOPO_3-0_TOUSTHEMES_SHP_LAMB93_D067_2022-03-15/BDTOPO_3-0_TOUSTHEMES_SHP_LAMB93_D067_2022-03-15/BDTOPO/1_DONNEES_LIVRAISON_2022-03-00081/BDT_3-0_SHP_LAMB93_D067-ED2022-03-15/ADRESSES/ADRESSE.shp")
+```
+
+## Crop datasets to case study region
+
+```{r}
+str_streets <- st_transform(str_streets, st_crs(str_case))
+str_blocks <- st_transform(str_blocks, st_crs(str_case))
+
+str_streets_cs <- st_filter(str_streets, str_case, .predicate = st_intersects)
+str_blocks_cs <- st_filter(str_blocks, str_case, .predicate = st_intersects) %>% 
+  dplyr::select(block_id, epoch)
+```
+
+## Buildings have geometry type 3D Polygon - needs to be changed for shapefile
+
+```{r}
+str_bldg_21_2d <- st_zm(str_bldg_21, drop = TRUE, what = "ZM")
+str_streets_cs_2d <- st_zm(str_streets_cs, drop = TRUE, what = "ZM")
+```
+
+## Centroids
+
+```{r}
+centroids <- st_centroid(str_bldg_21_2d)
+```
+
+## Write data
+
+```{r}
+# create directory
+dir.create("./output/str_input_bldg_metrics")
+
+## as shapefiles
+# remove bldg_function to avoid abbrevation of varnames
+st_write(str_bldg_21_2d,  "./output/str_input_bldg_metrics/str_bldg.shp", delete_layer = TRUE)
+st_write(str_streets_cs_2d, "./output/str_input_bldg_metrics/str_streets.shp", delete_layer = TRUE)
+st_write(centroids, "./output/str_input_bldg_metrics/str_centroid.shp", delete_layer = TRUE)
+st_write(str_blocks_cs, "./output/str_input_bldg_metrics/str_blocks.shp", delete_layer = TRUE)
+```
+

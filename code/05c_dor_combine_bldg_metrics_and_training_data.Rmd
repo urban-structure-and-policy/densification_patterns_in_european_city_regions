@@ -1,0 +1,80 @@
+---
+title: "Join trainingdata random forest"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(tidyverse)
+library(sf)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+```{r, include=FALSE}
+bldg_metrics <- st_read("./scripts/bldg_features/dor_input_bldg_metrics.gdb", layer = "dor_bldg_BLK_GA_BREG") %>% 
+  st_drop_geometry()
+
+dor_bldg_21 <- st_read("./output/dor_bldg_2021_02_filtered.gpkg")
+
+data_train_raw <- read_sf("./input/bldg_classification/dor_trainingsdata.gpkg") %>% 
+  st_drop_geometry() 
+```
+
+## Explore data
+
+```{r}
+summary(bldg_metrics)
+```
+
+## Join data
+
+```{r}
+dat_train <- data_train_raw %>%
+  mutate(REFSTR = if_else(is.na(REFSTR), OLD_REFSTR, REFSTR)) %>% 
+  st_drop_geometry() %>%
+  group_by(REFSTR) %>%
+  summarise(n = n())
+
+## filter to residential buildings only and simplify types
+trainingsdata_prep <- data_train_raw %>% 
+  # filter(res_non_res == "residential") %>% 
+  mutate(REFSTR_simple = if_else(REFSTR %in% c("EFH-EH", "EFH-DH", "EFH-RH"), "SFH", NA),
+         REFSTR_simple = if_else(REFSTR %in% c("MFH-F", "MFH-HH", "MFH-TZ", "MFH-IZ", "MFH-G"), "MFH", REFSTR_simple),
+         REFSTR_simple = if_else(REFSTR %in% c("NG"), "aux", REFSTR_simple),
+         REF_simple = if_else(REFSTR_simple == "SFH", 30, NA),
+         REF_simple = if_else(REFSTR_simple == "MFH", 10, REF_simple),
+         REF_simple = if_else(REFSTR_simple == "aux", 99, REF_simple)) %>% 
+  select(oi, REFSTR, REFSTR_simple, REF_simple)
+
+data_fin <- dor_bldg_21 %>% 
+  st_drop_geometry() %>% 
+  select(-Gebaeude_H, -area_foot, -peri_foot) %>% 
+  left_join(trainingsdata_prep, by = join_by("oi" == "oi")) %>% 
+  left_join(bldg_metrics, by = join_by("oi" == "oi")) %>% 
+  select(oi, res_non_res, area_foot, peri_foot, REFSTR, REFSTR_simple, REF_simple, Join_Count:BLK_Join_Count, Gebaeude_H:SCHUMM,
+          NEAR_FID:MINDISTBLDG, OBJART, OID_BLK, AREA_BLK, SHPXREG:BUILDUP)
+  
+data_fin %>%
+  group_by(REF_simple) %>%
+  summarise(n = n())
+
+colSums(is.na(data_fin))
+```
+
+## Write data
+
+```{r}
+write_rds(data_fin, "./output/dor_bldg_input_rf.rds")
+```

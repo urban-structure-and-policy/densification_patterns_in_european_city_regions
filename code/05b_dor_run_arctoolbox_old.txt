@@ -1,0 +1,45 @@
+In this step the you need to run an ArcToolbox in ArcGIS. The Toolbox is provided upon request. 
+Use the building footprints of t1 produced in Step 2d and the output of 05a as input for the process.
+
+The following variables are computed: 
+
+* TARGET_FID : Identifier building
+* area_foot: Size of building footprint
+* peri_foot: Perimeter of building footprint
+* Gebaeude_H: Building height
+* VOL: Building volume (SHAPE_Area * height)       
+* N_NODES: Number of nodes (vertices) in the building footprint 
+* RATIOAREA: Ratio of actual footprint area to bounding rectangle area
+* SHPX: Shape index of the footprint   
+* UFE: Perimeter-to-area ratio
+* SCHUMM: Diameter of circle with the same area / Diameter of smalles circumscribing circle   
+* N_NBR: Number of neighbours  
+* MBG_Width: Width of the minimum bounding rectangle       
+* MBG_Length: Length of the minimum bounding rectangle  
+* MBG_Orientation: Orientation (angle) of the rectangle  
+* RECTRATIO: Ratio of rectangle's length to width (MBG_Length / MBG_Width)
+* AREARECT: Area of the bounding rectangle (MBG_Length * MBG_Width)  
+* MBG_Diameter: Diameter of the minimum bounding circle  
+
+* NEAR_FID: Object ID of the nearest feature     
+* MINDISTROAD: Distance from building to nearest road street axis      
+* MINDISTBLDG: Distance to nearest neighboring building  
+
+* ADDNUMB: Count of address points intersecting with building   
+  
+* OID_REG: Unique identifier for building region (touching footprints dissolved) 
+* AREAREG: Area of the building region       
+* PERIREG: Perimeter of building region 
+* SHPXREG: Shape index of the building region  
+* MIN_AREA, MAX_AREA, MEAN_AREA, STD_AREA: Statistics for area per building region
+* MIN_VOL, MAX_VOL, SUM_VOL, MEAN_VOL, STD_VOL: Statistics for volume per building region
+* MIN_Gebaeude_H, MAX_Gebaeude_H, MEAN_Gebaeude_H, STD_Gebaeude_H: Statistics for buiding height per building region
+
+* OID_BLK: Identifier for the building block  
+* OBJART: ATKIS-Type of building block      
+* AREA_BLK: Area of the building block polygon      
+* BLK_Join_Count: Count of buildings joined to a block
+* SUM_Shape_Area, MEAN_Shape_Area, STD_Shape_Area: Statistics for area of all buildings in a block
+* BUILDUP: Built-up area within the block   
+
+

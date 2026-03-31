@@ -1,0 +1,89 @@
+---
+title: "Prepare data and folder structure for CCI"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(sf)
+library(dplyr)
+library(terra)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Create directories needed for processing
+
+Here we create all the directories which we later need in the python processing
+
+```{r}
+dir.create("./output/cci")
+dir.create("./output/cci/input")
+dir.create("./output/cci/output")
+dir.create("./output/cci/input/OSM")
+dir.create("./output/cci/input/csr")
+dir.create("./output/cci/input/csr/buffer")
+```
+
+## Load Data
+
+* Case study regions
+* GHS-POP prepared raster
+
+```{r}
+dor_case <- st_read("./output/dor_iso30_VWG_dissolved.gpkg")
+str_case <- st_read("./output/str_iso30_commune_dissolved.gpkg")
+liv_case <- st_read("./output/liv_iso30_LSOA_dissolved.gpkg")
+
+r_all <- rast("./output/GHS_POP_E2020_europe.tif")
+```
+
+## Prepare population raster  
+
+Exclude 0 values from population raster
+
+```{r}
+# Set 0 values to NA
+r_all_cci <- r_all
+  
+r_all_cci[r_all_cci == 0] <- NA
+
+# Set a clean layer name (e.g., "Band1")
+names(r_all_cci) <- ""
+```
+
+## Create layer with 20.000 m Buffer
+
+This layer is needed in 06c (processing step in Python). It needs to be saved as Shapefile.
+
+```{r}
+dor_case <- st_transform(dor_case, crs = 25832)
+str_case <- st_transform(str_case, crs = 25832)
+liv_case <- st_transform(liv_case, crs = 25832)
+
+dor_buffer <- st_buffer(dor_case, 20000)
+str_buffer <- st_buffer(str_case, 20000)
+liv_buffer <- st_buffer(liv_case, 20000)
+```
+
+## Write results
+
+```{r}
+writeRaster(r_all_cci, "./output/cci/input/GHS_POP_E2020_non_0.tif", overwrite=TRUE)
+
+st_write(dor_case, "./output/cci/input/csr/dor.shp", delete_layer = TRUE)
+st_write(dor_buffer, "./output/cci/input/csr/buffer/buffer_dor.shp", delete_layer = TRUE)
+
+st_write(str_case, "./output/cci/input/csr/str.shp", delete_layer = TRUE)
+st_write(str_buffer, "./output/cci/input/csr/buffer/buffer_str.shp", delete_layer = TRUE)
+
+st_write(liv_case, "./output/cci/input/csr/liv.shp", delete_layer = TRUE)
+st_write(liv_buffer, "./output/cci/input/csr/buffer/buffer_liv.shp", delete_layer = TRUE)
+```

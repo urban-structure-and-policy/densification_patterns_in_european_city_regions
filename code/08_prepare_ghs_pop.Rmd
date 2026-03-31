@@ -1,0 +1,120 @@
+---
+title: "Prepare GHS-Pop"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(sf)
+library(tidyverse)
+library(terra)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+* Case study region
+* GHS-POP: 
+   + Download Data (choose tiles for case study regions): https://ghsl.jrc.ec.europa.eu/download.php?ds=pop
+   + Epoch: 2020
+   + Resolution: 100m
+   + CRS: Mollweide
+
+```{r}
+str_cs <- st_read("./output/str_iso30_commune_dissolved.gpkg")
+dor_cs <- st_read("./output/dor_iso30_VWG_dissolved.gpkg")
+liv_cs <- st_read("./output/liv_iso30_LSOA_dissolved.gpkg")
+
+r1 <- rast("./input/GHSL/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R3_C18/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R3_C18.tif")
+r2 <- rast("./input/GHSL/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R3_C19/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R3_C19.tif")
+r3 <- rast("./input/GHSL/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R4_C18/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R4_C18.tif")
+r4 <- rast("./input/GHSL/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R4_C19/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R4_C19.tif")
+```
+
+## Aggregate into one raster and save for cci calculations
+
+```{r}
+r_all <- mosaic(r1, r2, r3, r4, fun = "mean")
+
+# Write GeoTIFF, NA values will be written as NoData
+writeRaster(r_all, "./output/GHS_POP_E2020_europe.tif", overwrite=TRUE)
+```
+
+## Calculate average of neighbouring cells
+
+```{r}
+# Define a 3x3 moving window
+w <- matrix(1, nrow = 3, ncol = 3)
+
+# Replace 0 values with NA so they are ignored
+r_na <- classify(r_all, rbind(c(0, 0, NA)))
+
+# Apply focal mean including the center cell
+r_all_mean <- focal(r_na, w = w, fun = mean, na.rm = TRUE)
+```
+
+## Derive vectordata with population density and mean population density 
+
+## Crop geotiff to case study regions
+```{r}
+vectorise_ghspop <- function(region_cs, r_all, r_all_mean) {
+  
+  # Reproject vector to match raster CRS
+  region_cs <- st_transform(region_cs, crs(r_all))
+  
+  # Crop raster to vector extent and mask - for all
+  r_all_crop <- crop(r_all, vect(region_cs))
+  r_all_masked <- mask(r_all_crop, vect(region_cs))
+  
+  # Crop raster to vector extent and mask - for mean values
+  r_mean_crop <- crop(r_all_mean, vect(region_cs))
+  r_mean_masked <- mask(r_mean_crop, vect(region_cs))
+  
+  # Vectorize Raster
+  
+  ## Convert raster to polygons and convert to sf - for all
+  vectorized_all <- as.polygons(r_all_masked, aggregate = FALSE) %>%
+    st_as_sf(vectorized_all)
+  
+  ## Convert raster to polygons and convert to sf - for mean values
+  vectorized_mean <- as.polygons(r_mean_masked, aggregate = FALSE) %>%
+    st_as_sf(vectorized_mean)
+  
+  # Prepare final dataset
+  region_ghs_pop_all <- vectorized_all %>%
+    transmute(ghs_pop = GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R3_C18)
+  
+  region_ghs_pop_all_mean <- vectorized_mean %>%
+    transmute(ghs_pop_mean = focal_mean) %>%
+    st_drop_geometry()
+  
+  region_ghs_fin <- region_ghs_pop_all %>%
+    bind_cols(region_ghs_pop_all_mean) %>%
+    filter(ghs_pop != 0 & ghs_pop_mean != 0)
+  
+  region_ghs_fin
+  
+}
+```
+
+```{r}
+str_ghs_fin <- vectorise_ghspop(str_cs, r_all, r_all_mean)
+dor_ghs_fin <- vectorise_ghspop(dor_cs, r_all, r_all_mean)
+liv_ghs_fin <- vectorise_ghspop(liv_cs, r_all, r_all_mean)
+```
+
+## Write results
+
+```{r}
+st_write(str_ghs_fin, "./output/str_ghs_pop.gpkg", delete_layer = TRUE)
+st_write(dor_ghs_fin, "./output/dor_ghs_pop.gpkg", delete_layer = TRUE)
+st_write(liv_ghs_fin, "./output/liv_ghs_pop.gpkg", delete_layer = TRUE)
+```

@@ -1,0 +1,98 @@
+---
+title: "Prepare Corine land cover"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(dplyr)
+library(sf)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+* Case study region
+* Download CLC 2012 data from https://land.copernicus.eu/en/products/corine-land-cover/clc-2012 (free account needed)
+
+As loading the full dataset runs very long, we ruffly reduced the dataset to our case study regions in QGIS. 
+
+```{r}
+dor_case <- st_read("./output/dor_iso30_VWG_dissolved.gpkg")
+str_case <- st_read("./output/str_iso30_commune_dissolved.gpkg")
+liv_case <- st_read("./output/liv_iso30_LSOA_dissolved.gpkg")
+
+dor_clc_raw <- st_read("./input/dor_orig_corine_u2018_clc2012_20u1.gpkg")
+str_clc_raw <- st_read("./input/str_orig_corine_u2018_clc2012_20u1.gpkg")
+liv_clc_raw <- st_read("./input/liv_orig_corine_u2018_clc2012_20u1.gpkg")
+```
+
+## Prepare data and crop to case study regions
+
+We are interested in urban land use. See nomenclature here: https://land.copernicus.eu/content/corine-land-cover-nomenclature-guidelines/html/
+
+```{r}
+prepare_clc <- function(region_clc_raw, region_case) {
+  
+  region_clc <- region_clc_raw %>%
+    mutate(
+      code_simple = substr(Code_12, start = 1, stop = 2),
+      code_nam = if_else(code_simple == "11", "urban fabric", "x"),
+      code_nam = if_else(code_simple == "12", "industrial/comercial/transport", code_nam),
+      code_nam = if_else(code_simple == "13", "mine/dump/construction sites", code_nam),
+      code_nam = if_else(code_simple == "14", "green ua/sport/leisure", code_nam)
+    ) %>%
+    filter(code_simple %in% c("11", "12", "13", "14"))
+  
+  region_clc <- st_transform(region_clc, st_crs(region_case))
+  region_clc_case <- st_intersection(region_clc, region_case)
+  
+  region_clc_case
+}
+```
+
+```{r}
+str_clc_case <- prepare_clc(str_clc_raw, str_case)
+dor_clc_case <- prepare_clc(dor_clc_raw, dor_case)
+liv_clc_case <- prepare_clc(liv_clc_raw, liv_case)
+```
+
+## Prepare urban mask 2012
+
+```{r}
+str_clc_urban_mask <- str_clc_case %>% 
+  group_by() %>%
+  summarise(geom = st_union(geom)) %>% 
+  mutate(clc_inside = "str_clc_inside")
+
+dor_clc_urban_mask <- dor_clc_case %>% 
+  group_by() %>%
+  summarise(geom = st_union(geom)) %>% 
+  mutate(clc_inside = "dor_clc_inside")
+
+liv_clc_urban_mask <- liv_clc_case %>% 
+  group_by() %>%
+  summarise(geom = st_union(geom)) %>% 
+  mutate(clc_inside = "liv_clc_inside")
+```
+
+## Write results
+
+```{r}
+st_write(str_clc_case, "./output/str_clc_landuse.gpkg", delete_layer = TRUE)
+st_write(str_clc_urban_mask, "./output/str_clc_urbanmask.gpkg", delete_layer = TRUE)
+
+st_write(dor_clc_case, "./output/dor_clc_landuse.gpkg", delete_layer = TRUE)
+st_write(dor_clc_urban_mask, "./output/dor_clc_urbanmask.gpkg", delete_layer = TRUE)
+
+st_write(liv_clc_case, "./output/liv_clc_landuse.gpkg", delete_layer = TRUE)
+st_write(liv_clc_urban_mask, "./output/liv_clc_urbanmask.gpkg", delete_layer = TRUE)
+```

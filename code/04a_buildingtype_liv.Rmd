@@ -1,0 +1,103 @@
+---
+title: "Building type Liverpool"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(sf)
+library(dplyr)
+library(uuid)
+library(stringr)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+* AddressBase Premium: https://www.ordnancesurvey.co.uk/products/addressbase-premium (license needed)
+   + BLPU: Basic land and property unit
+   + Classification: This record holds the classification of a property and allows one to search upon the use of a feature.
+* Building footprints 2021
+
+```{r}
+# Basic Land and Property Unit
+addb_blpu <- st_read("./input/OS/AddressBase/0040176195-6425786-1/6425786.gpkg/6425786.gpkg", layer = "blpu")
+addb_clas <- st_read("./input/OS/AddressBase/0040176195-6425786-1/6425786.gpkg/6425786.gpkg", layer = "classification")
+
+# ## for faster processing only load the joined data after it was once saved
+# addressbase <- st_read("./output/liv_address_base_01_all.gpkg")
+
+liv_bldg_2021 <- st_read("./output/liv_bldg_2021_02_filtered.gpkg")
+```
+
+## Join address_base data
+
+For building classification we need to join the data from blpu with classification. 
+
+```{r}
+addressbase <- addb_blpu %>% 
+  select(uprn, start_date, end_date) %>% 
+  left_join(addb_clas %>% 
+              transmute(uprn, class_key, classification_code, 
+                        start_date_clas = start_date, 
+                        end_date_clas = end_date))
+```
+
+## Filter to relevant addresses
+
+We want to identify residential addresses. The dataset includes addresses throughout the property lifecycle, from proposed planning development through to demolished address. Thus, we need to filter to properties which were created prior to 2021 and still existed. Further, we filter to classification codes which are linked to residential use. 
+
+AddressBase Classification scheme: https://docs.os.uk/os-downloads/addressing-and-location/addressbase-fundamentals/classification-scheme
+
+```{r}
+addressbase_res <- addressbase %>% 
+  filter(start_date_clas <= "2021-06-01") %>% # filter to addresses which were created prior to 2021
+  filter(end_date_clas >= "2021-06-01" |is.na(end_date_clas)) %>%  # filter to addresses which still existed in 2021
+  filter(classification_code %in% c("RD02", # detached
+                                    "RD03", # semi-detached
+                                    "RD04", # terraced
+                                    "RD06", # self-contained flat
+                                    "RH01", # house in multiple occupation
+                                    "X"))   # dual use
+```
+
+## Intersect buildings with address data
+
+```{r}
+## join address_information to buildings
+joined <- st_join(liv_bldg_2021, addressbase_res, join = st_intersects, left = TRUE)
+joined_reduced <- joined %>% filter(!is.na(classification_code)) %>% 
+  st_drop_geometry() %>% 
+  group_by(fid_os) %>% 
+  summarise(n_address = n(), 
+            classification_code = paste(sort(unique(classification_code)) , collapse = ", "))
+
+# aggregate to building types
+bldg_type <- joined_reduced %>% 
+  mutate(sfh_mfh = if_else(str_detect(classification_code, "RD06|RH01|RH03"), "mfh", "other"), 
+         sfh_mfh = if_else(str_detect(classification_code, "RD02|RD03|RD04") & !str_detect(classification_code, "RD06|RH01|RH03"), "sfh", sfh_mfh), 
+         sfh_mfh = if_else(str_detect(classification_code, "X"), "mfh", sfh_mfh))
+
+## final dataset
+liv_bldg_2021_addbase <- liv_bldg_2021 %>% 
+  left_join(bldg_type) %>% 
+  mutate(res_non_res = if_else(is.na(sfh_mfh), "non_res", "res"))
+```
+
+## Write results
+
+```{r}
+st_write(liv_bldg_2021_addbase, "./output/liv_bldg_2021_03_bldg_type.gpkg", delete_layer = TRUE)
+
+# st_write(addressbase, "./output/liv_address_base_01_all.gpkg", delete_layer = TRUE)
+# st_write(addressbase_res, "./output/liv_address_base_02_reduced.gpkg", delete_layer = TRUE)
+```
+

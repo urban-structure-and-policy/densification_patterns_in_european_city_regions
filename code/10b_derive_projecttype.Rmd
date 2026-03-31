@@ -1,0 +1,186 @@
+---
+title: "Derive project type"
+output: html_document
+---
+
+## Load packages
+
+```{r, echo=FALSE}
+library(tidyverse)
+library(sf)
+```
+
+## Set root directory
+
+Set path to your wd in masterfile or directly here. 
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(my_wd))
+```
+
+## Load Data
+
+```{r}
+dor_dat <- read_sf("./output/dor_bldg_2021_04_all_dens.gpkg") 
+dor_proj <- read_sf("./output/dor_projects_01_dens.gpkg") 
+
+str_dat <- read_sf("./output/str_bldg_2022_04_all_dens.gpkg") 
+str_proj <- read_sf("./output/str_projects_01_dens.gpkg") 
+
+liv_dat <- read_sf("./output/liv_bldg_2021_04_all_dens.gpkg") 
+liv_proj <- read_sf("./output/liv_projects_01_dens.gpkg") 
+```
+
+## For each project (each cluster_id) we derive the following variabels
+
+* Share of building area_foot inside/outside clc
+* Predominant building type
+* New building volume
+* Mean population density
+
+```{r}
+derive_projecttype <- function(df_reg, df_prj) {
+  
+  bldg_type <- df_reg %>%
+    st_drop_geometry() %>%
+    group_by(cluster_id, sfh_mfh) %>%
+    summarise(n_bldg = n(),
+              area_foot_sum = sum(area_foot, na.rm = TRUE)) %>%
+    pivot_wider(names_from = sfh_mfh,
+                values_from = n_bldg:area_foot_sum) %>%
+    transmute(cluster_id,
+              area_foot_sum_sfh = if_else(is.na(area_foot_sum_sfh), 0, area_foot_sum_sfh),
+              area_foot_sum_mfh = if_else(is.na(area_foot_sum_mfh), 0, area_foot_sum_mfh),
+              area_foot_all_bldg = area_foot_sum_sfh + area_foot_sum_mfh,
+              share_area_foot_sfh = area_foot_sum_sfh / area_foot_all_bldg,
+              bldg_type_predominant = if_else(share_area_foot_sfh > 0.5, "sfh", "mfh"))
+  
+  inside_clc <- df_reg %>%
+    st_drop_geometry() %>%
+    mutate(clc_inside = if_else(is.na(clc_inside), "outside", clc_inside)) %>%
+    group_by(cluster_id, clc_inside) %>%
+    summarise(n_bldg = n(),
+              area_foot_sum = sum(area_foot, na.rm = TRUE)) %>%
+    pivot_wider(names_from = clc_inside,
+                values_from = n_bldg:area_foot_sum) %>%
+    transmute(cluster_id,
+              area_foot_sum_inside = if_else(is.na(area_foot_sum_inside), 0, area_foot_sum_inside),
+              area_foot_sum_outside = if_else(is.na(area_foot_sum_outside), 0, area_foot_sum_outside),
+              area_foot_all_bldg = area_foot_sum_inside + area_foot_sum_outside,
+              share_area_foot_TRUE = area_foot_sum_inside / area_foot_all_bldg,
+              proj_clc_inside = if_else(share_area_foot_TRUE > 0.5, "inside", "outside"))
+  
+  ghs_pop_total <- df_reg %>%
+    st_drop_geometry() %>%
+    group_by() %>%
+    summarise(
+      ghs_pop_proj = mean(ghs_pop, na.rm = TRUE),
+      ghs_pop_mean_proj = mean(ghs_pop_mean, na.rm = TRUE))
+  
+  ghs_pop <- df_reg %>%
+    st_drop_geometry() %>%
+    group_by(cluster_id) %>%
+    summarise(
+      ghs_pop_proj = mean(ghs_pop, na.rm = TRUE),
+      ghs_pop_mean_proj = mean(ghs_pop_mean, na.rm = TRUE)) %>%
+    # some projects do have na values, as gridcell in ghs_pop is missing; we substitute them with the mean of all projects
+    mutate(ghs_pop_proj = if_else(is.nan(ghs_pop_proj), 43, ghs_pop_proj),
+      ghs_pop_mean_proj = if_else(is.nan(ghs_pop_mean_proj), 37, ghs_pop_mean_proj))
+  
+  new_bldg_vol <- df_reg %>%
+    st_drop_geometry() %>%
+    group_by(cluster_id) %>%
+    summarise(n_bldg = n(),
+              bldg_vol_sum = sum(bldg_vol, na.rm = TRUE))
+  
+  ## Join data and derive project types
+  project_types <- df_prj %>%
+    left_join(new_bldg_vol) %>%
+    left_join(inside_clc %>% select(cluster_id, proj_clc_inside)) %>%
+    left_join(ghs_pop) %>%
+    left_join(bldg_type %>% select(cluster_id, share_area_foot_sfh, bldg_type_predominant)) %>%
+    mutate(proj_type = if_else(n_bldg <= 3 & bldg_type_predominant == "sfh", "S_sfh", "M"),
+      proj_type = if_else(n_bldg <= 3 & bldg_vol_sum <= 10000 & bldg_type_predominant == "mfh", "S_mfh", proj_type),
+      proj_type = if_else(n_bldg > 30 & bldg_type_predominant == "sfh", "L_sfh", proj_type),
+      proj_type = if_else((n_bldg > 10 | bldg_vol_sum > 50000) & bldg_type_predominant == "mfh", "L_mfh", proj_type),
+      proj_type = if_else(proj_type == "M" & bldg_type_predominant == "sfh", "M_sfh", proj_type),
+      proj_type = if_else(proj_type == "M" & bldg_type_predominant == "mfh", "M_mfh", proj_type))
+  
+  # return dataframe
+  return(project_types)
+  
+}
+```
+
+```{r}
+dor_project_types <- derive_projecttype(dor_dat, dor_proj)
+str_project_types <- derive_projecttype(str_dat, str_proj)
+liv_project_types <- derive_projecttype(liv_dat, liv_proj)
+```
+
+## Join back to building data
+
+```{r}
+dor_bldg_proj_type <- dor_dat %>% 
+  left_join(dor_project_types %>% st_drop_geometry() %>% 
+              select(cluster_id, proj_area, proj_clc_inside, proj_type))
+
+str_bldg_proj_type <- str_dat %>% 
+  left_join(str_project_types %>% st_drop_geometry() %>% 
+              select(cluster_id, proj_area, proj_clc_inside, proj_type))
+
+liv_bldg_proj_type <- liv_dat %>% 
+  left_join(liv_project_types %>% st_drop_geometry() %>% 
+              select(cluster_id, proj_area, proj_clc_inside, proj_type))
+```
+
+## Write results
+
+```{r}
+st_write(dor_project_types, "./output/dor_projects_02_projecttypes.gpkg", delete_layer = TRUE)
+st_write(dor_bldg_proj_type, "./output/dor_bldg_2021_05_all_dens_fin.gpkg", delete_layer = TRUE)
+
+st_write(str_project_types, "./output/str_projects_02_projecttypes.gpkg", delete_layer = TRUE)
+st_write(str_bldg_proj_type, "./output/str_bldg_2021_05_all_dens_fin.gpkg", delete_layer = TRUE)
+
+st_write(liv_project_types, "./output/liv_projects_02_projecttypes.gpkg", delete_layer = TRUE)
+st_write(liv_bldg_proj_type, "./output/liv_bldg_2021_05_all_dens_fin.gpkg", delete_layer = TRUE)
+```
+
+## Write centroids for QGIS
+
+Optional step for graphic representation in QGIS
+
+```{r}
+# region <- c("dor", "str", "liv")
+# type <- c("L_mfh", "L_sfh", "M_mfh", "M_sfh", "S_mfh", "S_sfh")
+# 
+# dir.create("./output/centroids")
+# 
+# run_write_centroids <- function(region, type) {
+#   
+#   # Get the appropriate data
+#   input_data <- get(paste0(region, "_project_types"))
+#   
+#   # Calculate centroids and filter
+#   centroids <- st_centroid(input_data) %>% 
+#     filter(proj_clc_inside == "inside")
+#   
+#   # Further filter by project type
+#   output_data <- centroids %>% filter(proj_type == type)
+#   
+#   # Write to file
+#   st_write(output_data, paste0("./output/centroids/", region, "_projects_centroids_", type, ".gpkg"))
+# }
+# 
+# library(purrr)
+# 
+# combinations <- expand.grid(region = region, type = type, stringsAsFactors = FALSE)
+# pmap(combinations, run_write_centroids)
+```
+
+
+
+
+
+
