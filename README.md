@@ -1,4 +1,4 @@
-# Densification patterns in European City-regions
+# Densification patterns in European city-regions
 In this repository we provide a geospatial approach to measure and compare densification processes in city-regions in France, Germany and UK. 
 
 ## Workflow
