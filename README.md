@@ -16,6 +16,8 @@ The output of the process is a dataset of building footprints with a) newly emer
 
 <img src="https://github.com/user-attachments/assets/1118923d-9212-4182-b669-afb95ac209a1" width="600">
 
+<sub>Source Liverpool: © Crown copyright and/or database rights 2023 OS (Research Licence).</sub>
+
 ## Getting started
 The purpose of this repository is to provide the code for review and documentation. As some of the data for reproducing the whole process is not open accessible, possibilites for actually running the workflow are limited. 
 
